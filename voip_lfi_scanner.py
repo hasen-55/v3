@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+# VoIP LFI Vulnerability Scanner
 
 import asyncio
 import httpx
@@ -21,21 +21,22 @@ import time
 import warnings
 import urllib3
 from jinja2 import Environment, FileSystemLoader
-# -- إعدادات التكوين --
+
+# -- Configuration Settings --
 CONFIG_FILE = "config.yaml"
 DB_FILE = "voip_scanner.db"
 RESULTS_FILE = "results.log"
 REPORTS_DIR = "reports"
 TEMPLATES_DIR = "templates"
 
-# -- تحميل التكوين --
+# -- Load Configuration --
 def load_config():
-    """تحميل إعدادات التكوين من ملف YAML"""
+    """Load configuration from YAML file"""
     try:
         with open(CONFIG_FILE, "r") as f:
             config = yaml.safe_load(f)
             
-        # القيم الافتراضية إذا لم يتم توفيرها في الملف
+        # Default values if not provided in file
         defaults = {
             'http_timeout': 7,
             'concurrent_connections': 50,
@@ -53,16 +54,16 @@ def load_config():
                 
         return config
     except Exception as e:
-        print(f"خطأ في تحميل ملف التكوين: {str(e)}")
+        print(f"Error loading config file: {str(e)}")
         return None
 
 config = load_config()
 
 if not config:
-    print("لا يمكن المتابعة بدون ملف تكوين صالح")
+    print("Cannot continue without valid config file")
     exit(1)
 
-# -- إعداد التسجيل --
+# -- Logging Setup --
 logging.basicConfig(
     filename=RESULTS_FILE,
     filemode='a',
@@ -72,13 +73,13 @@ logging.basicConfig(
 
 console = Console()
 
-# -- قاعدة بيانات SQLite --
+# -- Database Functions --
 def init_db():
-    """تهيئة قاعدة البيانات"""
+    """Initialize the database"""
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     
-    # جدول الأجهزة المعروفة
+    # Known devices table
     c.execute('''
         CREATE TABLE IF NOT EXISTS devices (
             device_name TEXT PRIMARY KEY,
@@ -88,7 +89,7 @@ def init_db():
         )
     ''')
     
-    # جدول نتائج الفحص
+    # Scan results table
     c.execute('''
         CREATE TABLE IF NOT EXISTS scan_results (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -105,7 +106,7 @@ def init_db():
         )
     ''')
     
-    # جدول إحصائيات الفحص
+    # Scan statistics table
     c.execute('''
         CREATE TABLE IF NOT EXISTS scan_stats (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -121,7 +122,7 @@ def init_db():
     return conn
 
 def load_devices_db(conn):
-    """تحميل بيانات الأجهزة من قاعدة البيانات"""
+    """Load device data from database"""
     c = conn.cursor()
     c.execute('SELECT device_name, user_agents, paths, fingerprints FROM devices')
     rows = c.fetchall()
@@ -135,7 +136,7 @@ def load_devices_db(conn):
     return devices_db
 
 def save_device(conn, device_name, user_agents=None, paths=None, fingerprints=None):
-    """حفظ أو تحديث جهاز في قاعدة البيانات"""
+    """Save or update device in database"""
     if user_agents is None:
         user_agents = []
     if paths is None:
@@ -157,7 +158,7 @@ def save_device(conn, device_name, user_agents=None, paths=None, fingerprints=No
     conn.commit()
 
 def save_scan_result(conn, ip, port, device_name, path, protocol, status_code, response_time, response_size, detected_lfi):
-    """حفظ نتيجة الفحص في قاعدة البيانات"""
+    """Save scan result to database"""
     c = conn.cursor()
     c.execute('''
         INSERT INTO scan_results
@@ -167,7 +168,7 @@ def save_scan_result(conn, ip, port, device_name, path, protocol, status_code, r
     conn.commit()
 
 def start_scan_session(conn, total_ips):
-    """بدء جلسة فحص جديدة وتسجيل وقت البدء"""
+    """Start new scan session and record start time"""
     c = conn.cursor()
     c.execute('''
         INSERT INTO scan_stats 
@@ -178,7 +179,7 @@ def start_scan_session(conn, total_ips):
     return c.lastrowid
 
 def update_scan_session(conn, session_id, scanned_ips, vulnerable_ips):
-    """تحديث إحصائيات جلسة الفحص"""
+    """Update scan session statistics"""
     c = conn.cursor()
     c.execute('''
         UPDATE scan_stats 
@@ -188,7 +189,7 @@ def update_scan_session(conn, session_id, scanned_ips, vulnerable_ips):
     conn.commit()
 
 def end_scan_session(conn, session_id):
-    """إنهاء جلسة الفحص وتسجيل وقت الانتهاء"""
+    """End scan session and record end time"""
     c = conn.cursor()
     c.execute('''
         UPDATE scan_stats 
@@ -197,9 +198,9 @@ def end_scan_session(conn, session_id):
     ''', (session_id,))
     conn.commit()
 
-# -- تحليل الاستجابة --
+# -- Response Analysis --
 def analyze_response(resp: httpx.Response):
-    """تحليل الاستجابة للكشف عن ثغرات LFI"""
+    """Analyze response for LFI vulnerabilities"""
     if resp is None or resp.status_code != 200:
         return False
 
@@ -217,32 +218,32 @@ def analyze_response(resp: httpx.Response):
     return False
 
 def extract_body_patterns(body_text):
-    """استخراج أنماط مميزة من محتوى الصفحة"""
+    """Extract distinctive patterns from page content"""
     patterns = []
     body_text = body_text.lower()
     
-    # علامات HTML مميزة
+    # HTML meta tags
     meta_generator = re.search(r'<meta name="generator" content="([^"]+)"', body_text)
     if meta_generator:
         patterns.append(f"meta_generator:{meta_generator.group(1)}")
     
-    # نصوص حقوق الملكية
+    # Copyright notices
     copyright_match = re.search(r'copyright.*?(\d{4})', body_text)
     if copyright_match:
         patterns.append(f"copyright:{copyright_match.group(1)}")
     
-    # نماذج تسجيل الدخول
+    # Login forms
     if any(x in body_text for x in ["login", "username", "password", "sign in"]):
         patterns.append("login_form")
     
     return patterns
 
 def detect_device_system(resp: httpx.Response, devices_db):
-    """كشف نوع الجهاز باستخدام بصمات متقدمة"""
+    """Detect device type using advanced fingerprinting"""
     if resp is None:
         return None
     
-    # جمع بصمة الجهاز من الاستجابة
+    # Build device fingerprint from response
     fingerprint = {
         'server': resp.headers.get("server", "").lower(),
         'x-powered-by': resp.headers.get("x-powered-by", "").lower(),
@@ -251,26 +252,26 @@ def detect_device_system(resp: httpx.Response, devices_db):
         'body_patterns': extract_body_patterns(resp.text)
     }
     
-    # البحث في قاعدة البيانات عن تطابق البصمة
+    # Check against known device fingerprints
     for device, info in devices_db.items():
         for known_fingerprint in info.get("fingerprints", []):
             match_score = 0
             
-            # مطابقة رؤوس HTTP
+            # Match HTTP headers
             for header in ['server', 'x-powered-by', 'www-authenticate', 'set-cookie']:
                 if known_fingerprint.get(header) and known_fingerprint[header] in fingerprint[header]:
                     match_score += 1
             
-            # مطابقة أنماط الجسم
+            # Match body patterns
             for pattern in known_fingerprint.get('body_patterns', []):
                 if pattern in fingerprint['body_patterns']:
                     match_score += 1
                     
-            # إذا تطابق أكثر من 3 عناصر، نعتبره مطابقًا
+            # Consider it a match if 3+ elements match
             if match_score >= 3:
                 return device
     
-    # محاولة الكشف باستخدام العوامل التقليدية إذا فشل الكشف بالبصمة
+    # Fallback to traditional detection if fingerprinting fails
     combined_headers = (resp.headers.get("server", "") + " " + resp.headers.get("user-agent", "")).strip()
     for device, info in devices_db.items():
         for known_ua in info.get("user_agents", []):
@@ -279,10 +280,10 @@ def detect_device_system(resp: httpx.Response, devices_db):
                 
     return None
 
-# -- طلب HTTP مع Retry --
+# -- HTTP Requests with Retry --
 @retry(wait=wait_fixed(2), stop=stop_after_attempt(3))
 async def fetch_url(client, url):
-    """إرسال طلب HTTP مع إعادة المحاولة عند الفشل"""
+    """Send HTTP request with retry on failure"""
     start_time = time.monotonic()
     resp = await client.get(url, follow_redirects=True)
     resp.raise_for_status()
@@ -290,40 +291,40 @@ async def fetch_url(client, url):
     return resp, elapsed
 
 async def request_url(client, protocol, ip, port, path):
-    """إرسال طلب HTTP/HTTPS"""
+    """Send HTTP/HTTPS request"""
     url = f"{protocol}://{ip}:{port}{path}"
     try:
         resp, elapsed = await fetch_url(client, url)
         return resp, elapsed
     except (httpx.RequestError, httpx.HTTPStatusError) as e:
-        logging.debug(f"فشل الطلب إلى {url}: {str(e)}")
+        logging.debug(f"Request failed to {url}: {str(e)}")
         return None, None
 
 async def test_path(client, ip, port, path):
-    """اختبار مسار معين على HTTP و HTTPS"""
-    # اختبار HTTP
+    """Test specific path on both HTTP and HTTPS"""
+    # Test HTTP
     resp, elapsed = await request_url(client, "http", ip, port, path)
     if resp and analyze_response(resp):
         return True, resp.status_code, "http", elapsed, len(resp.content)
 
-    # اختبار HTTPS
+    # Test HTTPS
     resp, elapsed = await request_url(client, "https", ip, port, path)
     if resp and analyze_response(resp):
         return True, resp.status_code, "https", elapsed, len(resp.content)
 
     return False, None, None, None, None
 
-# -- إدارة الأجهزة --
+# -- Device Management --
 def add_unknown_device(conn, devices_db, ip, resp=None):
-    """إضافة جهاز غير معروف إلى قاعدة البيانات"""
+    """Add unknown device to database"""
     device_name = f"Unknown_{ip.replace('.','_')}"
     
     if device_name in devices_db:
         return device_name
     
-    console.log(f"[yellow]تم اكتشاف جهاز جديد: {device_name}[/yellow]")
+    console.log(f"[yellow]New device detected: {device_name}[/yellow]")
     
-    # المسارات الافتراضية للفحص
+    # Default paths to scan
     default_paths = config.get('default_paths', [
         "/etc/passwd", 
         "/etc/shadow", 
@@ -332,7 +333,7 @@ def add_unknown_device(conn, devices_db, ip, resp=None):
         "/etc/config.php"
     ])
     
-    # بصمة الجهاز إذا توفرت استجابة
+    # Device fingerprint if response is available
     fingerprint = {}
     if resp:
         fingerprint = {
@@ -358,9 +359,9 @@ def add_unknown_device(conn, devices_db, ip, resp=None):
     
     return device_name
 
-# -- تحميل وعرض النتائج --
+# -- Results Handling --
 def get_vulnerabilities(conn, limit=1000):
-    """جلب قائمة الثغرات المكتشفة"""
+    """Get list of discovered vulnerabilities"""
     c = conn.cursor()
     c.execute('''
         SELECT 
@@ -383,10 +384,10 @@ def get_vulnerabilities(conn, limit=1000):
             for row in c.fetchall()]
 
 def get_scan_statistics(conn):
-    """جلب إحصائيات الفحص"""
+    """Get scan statistics"""
     c = conn.cursor()
     
-    # إحصائيات عامة
+    # General statistics
     c.execute('SELECT COUNT(*) FROM scan_results')
     total_scans = c.fetchone()[0]
     
@@ -399,7 +400,7 @@ def get_scan_statistics(conn):
     c.execute('SELECT COUNT(DISTINCT ip) FROM scan_results WHERE detected_lfi = 1')
     vulnerable_ips = c.fetchone()[0]
     
-    # الأجهزة الأكثر عرضة
+    # Most vulnerable devices
     c.execute('''
         SELECT device_name, COUNT(*) as count 
         FROM scan_results 
@@ -410,7 +411,7 @@ def get_scan_statistics(conn):
     ''')
     top_devices = [dict(zip(['device_name', 'count'], row)) for row in c.fetchall()]
     
-    # المسارات الأكثر عرضة
+    # Most vulnerable paths
     c.execute('''
         SELECT path, COUNT(*) as count 
         FROM scan_results 
@@ -430,39 +431,39 @@ def get_scan_statistics(conn):
         'top_paths': top_paths
     }
 
-# -- توليد التقارير --
+# -- Report Generation --
 def generate_reports(conn):
-    """إنشاء تقارير متعددة التنسيقات"""
+    """Generate multiple report formats"""
     os.makedirs(REPORTS_DIR, exist_ok=True)
     os.makedirs(TEMPLATES_DIR, exist_ok=True)
     
-    # إنشاء نموذج HTML إذا لم يكن موجودًا
+    # Create HTML template if it doesn't exist
     if not os.path.exists(os.path.join(TEMPLATES_DIR, "report_template.html")):
         create_default_template()
     
-    # جلب البيانات
+    # Get data
     vulns = get_vulnerabilities(conn)
     stats = get_scan_statistics(conn)
     
-    # إنشاء التقارير
+    # Generate reports
     generate_html_report(vulns, stats, os.path.join(REPORTS_DIR, "report.html"))
     generate_pdf_report(vulns, stats, os.path.join(REPORTS_DIR, "report.pdf"))
     generate_csv_report(vulns, os.path.join(REPORTS_DIR, "report.csv"))
     
-    console.log(f"[green]تم إنشاء التقارير في مجلد {REPORTS_DIR}[/green]")
+    console.log(f"[green]Reports generated in {REPORTS_DIR} directory[/green]")
 
 def create_default_template():
-    """إنشاء نموذج HTML افتراضي للتقرير"""
+    """Create default HTML report template"""
     template_content = """<!DOCTYPE html>
-<html dir="rtl" lang="ar">
+<html>
 <head>
     <meta charset="UTF-8">
-    <title>تقرير فحص ثغرات LFI</title>
+    <title>LFI Vulnerability Scan Report</title>
     <style>
         body { font-family: Arial, sans-serif; margin: 20px; }
         h1, h2 { color: #2c3e50; }
         table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
-        th, td { padding: 8px; text-align: right; border: 1px solid #ddd; }
+        th, td { padding: 8px; text-align: left; border: 1px solid #ddd; }
         th { background-color: #f2f2f2; }
         tr:nth-child(even) { background-color: #f9f9f9; }
         .vulnerable { color: red; font-weight: bold; }
@@ -470,22 +471,22 @@ def create_default_template():
     </style>
 </head>
 <body>
-    <h1>تقرير فحص ثغرات LFI</h1>
-    <p>تاريخ التقرير: {{ scan_date }}</p>
+    <h1>LFI Vulnerability Scan Report</h1>
+    <p>Report Date: {{ scan_date }}</p>
     
     <div class="summary">
-        <h2>ملخص النتائج</h2>
-        <p>إجمالي العناوين المفحوصة: {{ statistics.total_scans }}</p>
-        <p>عدد العناوين الفريدة: {{ statistics.unique_ips }}</p>
-        <p>عدد الثغرات المكتشفة: <span class="vulnerable">{{ statistics.vulnerabilities }}</span></p>
-        <p>عدد العناوين المعرضة: <span class="vulnerable">{{ statistics.vulnerable_ips }}</span></p>
+        <h2>Scan Summary</h2>
+        <p>Total Targets Scanned: {{ statistics.total_scans }}</p>
+        <p>Unique IPs: {{ statistics.unique_ips }}</p>
+        <p>Vulnerabilities Found: <span class="vulnerable">{{ statistics.vulnerabilities }}</span></p>
+        <p>Vulnerable IPs: <span class="vulnerable">{{ statistics.vulnerable_ips }}</span></p>
     </div>
     
-    <h2>أكثر الأجهزة عرضة</h2>
+    <h2>Top Vulnerable Devices</h2>
     <table>
         <tr>
-            <th>اسم الجهاز</th>
-            <th>عدد الثغرات</th>
+            <th>Device Name</th>
+            <th>Vulnerability Count</th>
         </tr>
         {% for device in statistics.top_devices %}
         <tr>
@@ -495,11 +496,11 @@ def create_default_template():
         {% endfor %}
     </table>
     
-    <h2>أكثر المسارات عرضة</h2>
+    <h2>Top Vulnerable Paths</h2>
     <table>
         <tr>
-            <th>المسار</th>
-            <th>عدد الثغرات</th>
+            <th>Path</th>
+            <th>Vulnerability Count</th>
         </tr>
         {% for path in statistics.top_paths %}
         <tr>
@@ -509,17 +510,17 @@ def create_default_template():
         {% endfor %}
     </table>
     
-    <h2>تفاصيل الثغرات</h2>
+    <h2>Vulnerability Details</h2>
     <table>
         <tr>
-            <th>العنوان</th>
-            <th>الجهاز</th>
-            <th>المسار</th>
-            <th>البروتوكول</th>
-            <th>الحالة</th>
-            <th>وقت الاستجابة</th>
-            <th>الحجم</th>
-            <th>التاريخ</th>
+            <th>Target</th>
+            <th>Device</th>
+            <th>Path</th>
+            <th>Protocol</th>
+            <th>Status</th>
+            <th>Response Time</th>
+            <th>Size</th>
+            <th>Timestamp</th>
         </tr>
         {% for vuln in vulnerabilities %}
         <tr>
@@ -528,8 +529,8 @@ def create_default_template():
             <td class="vulnerable">{{ vuln.path }}</td>
             <td>{{ vuln.protocol }}</td>
             <td>{{ vuln.status_code }}</td>
-            <td>{{ "%.2f"|format(vuln.response_time) }} ثانية</td>
-            <td>{{ vuln.response_size }} بايت</td>
+            <td>{{ "%.2f"|format(vuln.response_time) }}s</td>
+            <td>{{ vuln.response_size }} bytes</td>
             <td>{{ vuln.timestamp }}</td>
         </tr>
         {% endfor %}
@@ -541,9 +542,9 @@ def create_default_template():
         f.write(template_content)
 
 def generate_html_report(vulns, stats, output_file):
-    """إنشاء تقرير HTML باستخدام Jinja2"""
+    """Generate HTML report using Jinja2"""
     env = Environment(loader=FileSystemLoader(TEMPLATES_DIR))
-    template = env.get_template('report_template.html')
+    template = env.get_template('report_template.html'))
     
     html_content = template.render(
         vulnerabilities=vulns,
@@ -555,27 +556,27 @@ def generate_html_report(vulns, stats, output_file):
         f.write(html_content)
 
 def generate_pdf_report(vulns, stats, output_file):
-    """إنشاء تقرير PDF من HTML"""
+    """Generate PDF report from HTML"""
     html_file = output_file.replace(".pdf", ".html")
     generate_html_report(vulns, stats, html_file)
     
     options = {
         'encoding': 'UTF-8',
         'quiet': '',
-        'footer-right': '[page] من [topage]',
+        'footer-right': '[page] of [topage]',
         'orientation': 'Landscape'
     }
     
     try:
         pdfkit.from_file(html_file, output_file, options=options)
     except Exception as e:
-        console.log(f"[red]خطأ في إنشاء PDF: {str(e)}[/red]")
+        console.log(f"[red]PDF generation error: {str(e)}[/red]")
     finally:
         if os.path.exists(html_file):
             os.remove(html_file)
 
 def generate_csv_report(vulns, output_file):
-    """إنشاء تقرير CSV"""
+    """Generate CSV report"""
     with open(output_file, "w", newline='', encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow([
@@ -590,25 +591,25 @@ def generate_csv_report(vulns, output_file):
                 vuln['response_size'], vuln['timestamp']
             ])
 
-# -- فحص IP --
+# -- IP Scanning --
 async def scan_ip(conn, devices_db, client, ip, port, session_id):
-    """فحص عنوان IP معين"""
-    console.log(f"[cyan]==> جاري فحص {ip}:{port}[/cyan]")
+    """Scan specific IP address"""
+    console.log(f"[cyan]==> Scanning {ip}:{port}[/cyan]")
     
-    # محاولة الاتصال عبر HTTP و HTTPS
+    # Try HTTP and HTTPS
     resp, _ = await request_url(client, "http", ip, port, "/")
     if resp is None or resp.status_code >= 400:
         resp, _ = await request_url(client, "https", ip, port, "/")
 
     if resp is None:
-        console.log(f"[red]فشل الاتصال بـ {ip}:{port} (HTTP و HTTPS)[/red]")
+        console.log(f"[red]Failed to connect to {ip}:{port} (HTTP & HTTPS)[/red]")
         update_scan_session(conn, session_id, 1, 0)
         return
 
-    # كشف نوع الجهاز
+    # Detect device type
     device = detect_device_system(resp, devices_db)
     if device:
-        console.log(f"[green]تم اكتشاف الجهاز: {device}[/green]")
+        console.log(f"[green]Detected device: {device}[/green]")
         paths = devices_db[device]["paths"]
     else:
         device = add_unknown_device(conn, devices_db, ip, resp)
@@ -616,50 +617,50 @@ async def scan_ip(conn, devices_db, client, ip, port, session_id):
 
     found_vulns = 0
     
-    # فحص جميع المسارات المعرفة
+    # Scan all defined paths
     for path in paths:
         vulnerable, status, proto, resp_time, resp_size = await test_path(client, ip, port, path)
         if vulnerable:
-            console.log(f"[bold green][+] ثغرة LFI محتملة في {ip}:{port}{path} | الحالة: {status} | البروتوكول: {proto.upper()} | وقت الاستجابة: {resp_time:.2f} ثانية | الحجم: {resp_size} بايت[/bold green]")
+            console.log(f"[bold green][+] Potential LFI at {ip}:{port}{path} | Status: {status} | Protocol: {proto.upper()} | Response: {resp_time:.2f}s | Size: {resp_size} bytes[/bold green]")
             save_scan_result(conn, ip, port, device, path, proto, status, resp_time, resp_size, True)
             found_vulns += 1
         else:
-            console.log(f"[-] لا توجد ثغرة في المسار: {path}")
+            console.log(f"[-] No vulnerability at path: {path}")
 
-        await asyncio.sleep(config['rate_limit_delay'])  # تجنب الحظر
+        await asyncio.sleep(config['rate_limit_delay'])  # Rate limiting
 
-    # تحديث إحصائيات الجلسة
+    # Update session statistics
     update_scan_session(conn, session_id, 1, 1 if found_vulns > 0 else 0)
     
     if found_vulns:
-        console.log(f"[bold yellow]تم تسجيل {found_vulns} ثغرة لـ {ip}:{port}[/bold yellow]")
+        console.log(f"[bold yellow]Logged {found_vulns} vulnerabilities for {ip}:{port}[/bold yellow]")
     else:
-        console.log(f"[dim]لا توجد ثغرات في {ip}:{port}[/dim]")
+        console.log(f"[dim]No vulnerabilities found for {ip}:{port}[/dim]")
 
-# -- تحميل عناوين IP --
+# -- IP Loading --
 def validate_ip_port(ip_str, port):
-    """التحقق من صحة عنوان IP ومنفذ"""
+    """Validate IP address and port"""
     try:
         ipaddress.ip_address(ip_str)
         if not (1 <= port <= 65535):
-            raise ValueError("المنفذ يجب أن يكون بين 1 و 65535")
+            raise ValueError("Port must be between 1 and 65535")
         return True
     except ValueError as e:
-        logging.warning(f"عنوان غير صالح تم تجاهله: {ip_str}:{port} - {str(e)}")
+        logging.warning(f"Invalid address skipped: {ip_str}:{port} - {str(e)}")
         return False
 
 def load_ips_from_file(filename):
-    """تحميل عناوين IP من ملف مع التحقق من صحتها"""
+    """Load IP addresses from file with validation"""
     valid_ips = []
     if not os.path.exists(filename):
-        console.log(f"[red]ملف العناوين {filename} غير موجود[/red]")
+        console.log(f"[red]IP file {filename} not found[/red]")
         return valid_ips
     
     with open(filename, "r") as f:
         for line in f:
             line = line.strip()
-            if line and not line.startswith("#"):  # تجاهل الأسطر الفارغة والتعليقات
-                # تنسيقات متوقعة: IP أو IP:Port
+            if line and not line.startswith("#"):  # Skip empty lines and comments
+                # Expected formats: IP or IP:Port
                 if ':' in line:
                     ip_part, port_part = line.split(':', 1)
                     try:
@@ -669,33 +670,33 @@ def load_ips_from_file(filename):
                     except ValueError:
                         continue
                 else:
-                    if validate_ip_port(line, 80):  # المنفذ الافتراضي 80
+                    if validate_ip_port(line, 80):  # Default port 80
                         valid_ips.append((line, 80))
     
     return valid_ips
 
-# -- إعدادات SSL الآمنة --
+# -- SSL Security Settings --
 def create_ssl_context():
-    """إنشاء سياق SSL آمن"""
+    """Create secure SSL context"""
     context = ssl.create_default_context()
     
-    # تعطيل البروتوكولات غير الآمنة
+    # Disable insecure protocols
     context.options |= ssl.OP_NO_SSLv2
     context.options |= ssl.OP_NO_SSLv3
     context.options |= ssl.OP_NO_TLSv1
     context.options |= ssl.OP_NO_TLSv1_1
     
-    # تفعيل تحقق صارم من الشهادة
+    # Enable strict certificate verification
     context.verify_mode = ssl.CERT_REQUIRED
     context.check_hostname = True
     
-    # تحميل شهادات موثوقة من النظام
+    # Load system trusted certificates
     context.load_default_certs()
     
     return context
 
 async def create_http_client():
-    """إنشاء عميل HTTP مع خيارات أمان محسنة"""
+    """Create HTTP client with enhanced security"""
     ssl_context = create_ssl_context()
     
     limits = httpx.Limits(
@@ -714,32 +715,32 @@ async def create_http_client():
         }
     )
 
-# -- الوظيفة الرئيسية --
+# -- Main Function --
 async def main():
-    """الدالة الرئيسية لتشغيل الفحص"""
-    # تحميل التكوين
+    """Main scanning function"""
+    # Load configuration
     if not config:
-        console.log("[red]لا يمكن المتابعة بدون ملف تكوين صالح[/red]")
+        console.log("[red]Cannot continue without valid config file[/red]")
         return
     
-    # تهيئة قاعدة البيانات
+    # Initialize database
     conn = init_db()
     
-    # تحميل الأجهزة المعروفة
+    # Load known devices
     devices_db = load_devices_db(conn)
     
-    # تحميل عناوين IP
+    # Load IP addresses
     ip_list = load_ips_from_file("ip.txt")
     if not ip_list:
-        console.log("[red]لا توجد عناوين IP صالحة للمسح[/red]")
+        console.log("[red]No valid IPs to scan[/red]")
         return
     
-    console.print(f"\n[bold magenta]تم تحميل {len(ip_list)} عنوان IP صالح[/bold magenta]")
+    console.print(f"\n[bold magenta]Loaded {len(ip_list)} valid IP addresses[/bold magenta]")
     
-    # بدء جلسة الفحص
+    # Start scan session
     session_id = start_scan_session(conn, len(ip_list))
     
-    # إنشاء عميل HTTP
+    # Create HTTP client
     async with await create_http_client() as client:
         tasks = []
         with Progress(
@@ -749,7 +750,7 @@ async def main():
             TaskProgressColumn(),
             TimeRemainingColumn()
         ) as progress:
-            task = progress.add_task("[green]جاري فحص العناوين...", total=len(ip_list))
+            task = progress.add_task("[green]Scanning targets...", total=len(ip_list))
             
             for ip, port in ip_list:
                 tasks.append(scan_ip(conn, devices_db, client, ip, port, session_id))
@@ -758,23 +759,23 @@ async def main():
                 await future
                 progress.update(task, advance=1)
     
-    # إنهاء جلسة الفحص
+    # End scan session
     end_scan_session(conn, session_id)
     
-    # إنشاء التقارير
+    # Generate reports
     generate_reports(conn)
     
-    # عرض ملخص النتائج
+    # Show summary
     stats = get_scan_statistics(conn)
-    console.print(f"\n[bold]ملخص النتائج:[/bold]")
-    console.print(f"- العناوين المفحوصة: {stats['total_scans']}")
-    console.print(f"- العناوين الفريدة: {stats['unique_ips']}")
-    console.print(f"- الثغرات المكتشفة: [red]{stats['vulnerabilities']}[/red]")
-    console.print(f"- العناوين المعرضة: [red]{stats['vulnerable_ips']}[/red]")
+    console.print(f"\n[bold]Scan Summary:[/bold]")
+    console.print(f"- Targets scanned: {stats['total_scans']}")
+    console.print(f"- Unique IPs: {stats['unique_ips']}")
+    console.print(f"- Vulnerabilities found: [red]{stats['vulnerabilities']}[/red]")
+    console.print(f"- Vulnerable IPs: [red]{stats['vulnerable_ips']}[/red]")
 
 if __name__ == "__main__":
-    # تعطيل تحذيرات SSL غير الضرورية
+    # Disable unnecessary SSL warnings
     warnings.filterwarnings("ignore", category=urllib3.exceptions.InsecureRequestWarning)
     
-    # تشغيل الأداة
+    # Run the scanner
     asyncio.run(main())
